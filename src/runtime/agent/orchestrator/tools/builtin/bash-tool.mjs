@@ -61,7 +61,19 @@ export async function executeBashTool(args, workDir, options = {}) {
   // Every call starts from the current Project root. A command-local `cd`
   // never creates a second session cwd authority beside the dedicated cwd tool.
   const bashWorkDir = workDir;
-  const prepared = prepareShellCommand(args);
+  const sessionSignal = await sessionAbortSignal(options?.sessionId);
+  const preflightAbort = combineAbortSignals(sessionSignal, options?.abortSignal || null);
+  let prepared;
+  try {
+    prepared = await prepareShellCommand(args, {
+      cwd: bashWorkDir,
+      abortSignal: preflightAbort.signal,
+      ownerSessionId: options?.callerSessionId || options?.sessionId || null,
+      clientHostPid: options?.clientHostPid,
+    });
+  } finally {
+    preflightAbort.cleanup();
+  }
   if (prepared.failure) return prepared.failure;
   const { resolvedSpec, wmicRewrite, bashismRewrite } = prepared;
   // Effects are analyzed on the command as the caller meant it, before the
@@ -88,7 +100,7 @@ export async function executeBashTool(args, workDir, options = {}) {
   try {
     const invocation = await planShellInvocation({ command, resolvedSpec, cwd: bashWorkDir });
     if (invocation.failure) return invocation.failure;
-    combinedAbort = combineAbortSignals(await sessionAbortSignal(options?.sessionId), options?.abortSignal || null);
+    combinedAbort = combineAbortSignals(sessionSignal, options?.abortSignal || null);
     const startedAtMs = Date.now();
     const result = await execShellCommand({
       shell: invocation.execShell,

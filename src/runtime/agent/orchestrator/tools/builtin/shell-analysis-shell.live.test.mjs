@@ -54,6 +54,11 @@ test('the shell tool executes comment-bearing commands through Windows PowerShel
       ['Write-Output ([int]1+<# && #>2)', '3'],
       ['Write-Output CONTINUATION_OK `\n# &&', 'CONTINUATION_OK'],
       ['Write-Output /c/My` Documents', 'C:\\My Documents'],
+      ['$h=@{a=<# && #>1}; Write-Output $h.a', '1'],
+      ['Write-Output -InputObject:<# && #>1', '1'],
+      ['1<# && #>+2', '3'],
+      ['$x=1; $x<# && #>+2', '3'],
+      ['return 1+<# && #>2', '3'],
     ]) {
       assert.equal((await run(command)).trim(), `[exit code: 0]\n\n${expected}`, command);
     }
@@ -67,5 +72,8 @@ test('the shell tool executes comment-bearing commands through Windows PowerShel
     const assignment = await run("# '\n$PID=1");
     assert.match(assignment, /PowerShell preflight blocked/);
     assert.match(assignment, /`\$PID` is a reserved/);
+    for (const command of ['& $cmd +<# && #>', '& "Write-Output" +<# && #>', '`e`cho +<# && #>']) {
+      assert.match(await run(command), /PowerShell preflight blocked[\s\S]*`&&`/, command);
+    }
   });
 });

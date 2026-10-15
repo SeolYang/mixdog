@@ -8,7 +8,7 @@ import { formatShellToolFailure } from './result-format.mjs';
 // Policy + shell-specific rewrites before any shell dispatch. Returns either
 // `{ failure }` (a formatted tool failure) or the command to run with the
 // resolved shell spec and the wmic rewrite (if any).
-export function prepareShellCommand(args) {
+export async function prepareShellCommand(args, options = {}) {
   // Run hard-block policy before any shell dispatch.
   const rawCmd = String(args && args.command != null ? args.command : '');
   if (rawCmd) {
@@ -34,9 +34,11 @@ export function prepareShellCommand(args) {
   // rewrite MSYS `/x/…` drive paths and reject invalid PowerShell syntax
   // (`$PID=` reassignment, `&&` on PS 5.1). Dedicated-tool routing belongs in
   // the tool description, not command-name execution blocks.
-  const psHygiene = preflightPowerShellHygiene(command, {
+  const psHygiene = await preflightPowerShellHygiene(command, {
+    ...options,
     shellType: resolvedSpec.shellType,
     shellName: resolvedSpec.shell,
+    timeoutMs: Math.min(10_000, args.timeout_ms > 0 ? args.timeout_ms : 10_000),
   });
   if (psHygiene.block) return { failure: formatShellToolFailure(psHygiene.block) };
   command = psHygiene.command;

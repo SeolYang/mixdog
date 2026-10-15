@@ -45,7 +45,7 @@ test('shell execution policy matches sync-first background-task parity', () => {
   assert.equal(taskTool.inputSchema.properties.task_id.description, 'Shell task_id; required for read/wait/cancel.');
 });
 
-test('B: command names and pipelines are not hard-blocked for tool routing', () => {
+test('B: command names and pipelines are not hard-blocked for tool routing', async () => {
   const commands = [
     'grep foo file',
     'egrep foo file',
@@ -60,7 +60,7 @@ test('B: command names and pipelines are not hard-blocked for tool routing', () 
   for (const shell of [PS, PWSH]) {
     for (const command of commands) {
       assert.deepEqual(
-        preflightPowerShellHygiene(command, shell),
+        await preflightPowerShellHygiene(command, shell),
         { command, block: null, note: null },
         `${shell.shellName}: ${command}`
       );
@@ -68,42 +68,42 @@ test('B: command names and pipelines are not hard-blocked for tool routing', () 
   }
 });
 
-test('B: invalid PowerShell syntax and $PID reassignment remain blocked', () => {
-  assert.ok(preflightPowerShellHygiene('cd /c/p && x', PS).block, '&& on PS 5.1 blocked');
-  assert.ok(preflightPowerShellHygiene('$PID=1', PS).block, '$PID= reassignment blocked');
+test('B: invalid PowerShell syntax and $PID reassignment remain blocked', { skip: process.platform !== 'win32' }, async () => {
+  assert.match((await preflightPowerShellHygiene('cd /c/p && x', PS)).block, /`&&`/);
+  assert.match((await preflightPowerShellHygiene('$PID=1', PS)).block, /`\$PID`/);
 });
 
-test('B: valid PS syntax and quoted literals pass', () => {
-  assert.equal(preflightPowerShellHygiene('Select-String foo file', PS).block, null);
+test('B: valid PS syntax and quoted literals pass', { skip: process.platform !== 'win32' }, async () => {
+  assert.equal((await preflightPowerShellHygiene('Select-String foo file', PS)).block, null);
   // quoted MSYS-looking literal must NOT be drive-rewritten and must not block.
-  const q = preflightPowerShellHygiene("Write-Output '/a/b/'", PS);
+  const q = await preflightPowerShellHygiene("Write-Output '/a/b/'", PS);
   assert.equal(q.block, null);
   assert.equal(q.command, "Write-Output '/a/b/'");
   // masked `&&` inside a quote is not a real connector.
-  assert.equal(preflightPowerShellHygiene('echo "a && b"', PS).block, null);
+  assert.equal((await preflightPowerShellHygiene('echo "a && b"', PS)).block, null);
   // masked `$PID=` inside a quote is not a reassignment.
-  assert.equal(preflightPowerShellHygiene("Write-Output '$PID=1'", PS).block, null);
+  assert.equal((await preflightPowerShellHygiene("Write-Output '$PID=1'", PS)).block, null);
   // pwsh (PS 7) supports `&&`.
-  assert.equal(preflightPowerShellHygiene('echo a && echo b', PWSH).block, null);
+  assert.equal((await preflightPowerShellHygiene('echo a && echo b', PWSH)).block, null);
   // PowerShell treats backslash as a literal inside quotes. A quoted nested
   // bash program must stay opaque to the outer PowerShell preflight.
   const nestedBash =
     "$dir=(Resolve-Path 'x').Path -replace '\\','/'; docker run image bash -lc 'printf x | awk \"{print $1}\"'";
-  assert.equal(preflightPowerShellHygiene(nestedBash, PS).block, null);
+  assert.equal((await preflightPowerShellHygiene(nestedBash, PS)).block, null);
   // A real outer command after the same literal still gets classified.
-  assert.match(preflightPowerShellHygiene("Write-Output '\\'; $PID=1", PS).block, /`\$PID`/);
+  assert.match((await preflightPowerShellHygiene("Write-Output '\\'; $PID=1", PS)).block, /`\$PID`/);
 });
 
-test('B: MSYS /x/ drive path is losslessly rewritten to X:\\', () => {
-  const out = preflightPowerShellHygiene('cd /c/Project', PS);
+test('B: MSYS /x/ drive path is losslessly rewritten to X:\\', { skip: process.platform !== 'win32' }, async () => {
+  const out = await preflightPowerShellHygiene('cd /c/Project', PS);
   assert.equal(out.block, null);
   assert.equal(out.command, 'cd C:\\Project');
   assert.ok(out.note && /MSYS/.test(out.note));
 });
 
-test('B: POSIX host is a strict no-op', () => {
+test('B: POSIX host is a strict no-op', async () => {
   const cmd = 'grep foo | tail -5 && $PID=1';
-  const out = preflightPowerShellHygiene(cmd, { shellType: 'posix', shellName: 'bash' });
+  const out = await preflightPowerShellHygiene(cmd, { shellType: 'posix', shellName: 'bash' });
   assert.equal(out.block, null);
   assert.equal(out.command, cmd);
   assert.equal(out.note, null);

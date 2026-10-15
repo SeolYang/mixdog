@@ -128,7 +128,7 @@ test('the shell tool runs the rewritten command and reports each rewrite', {
   skip: !pwsh || pwsh.status !== 0,
 }, async () => {
   const args = { command: 'node -e "console.log(41 + 1)" 2>/dev/null' };
-  const prepared = prepareShellCommand(args);
+  const prepared = await prepareShellCommand(args);
   if (prepared.resolvedSpec?.shellType !== 'powershell') return;
   assert.equal(prepared.command, 'node -e "console.log(41 + 1)" 2>$null');
   assert.equal(prepared.analysisCommand, args.command);

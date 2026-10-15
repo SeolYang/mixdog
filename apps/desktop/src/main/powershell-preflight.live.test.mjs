@@ -42,7 +42,7 @@ test('packaged PowerShell preflight accepts comments and runs them in Windows Po
       '<# && $PID=1 /c/comment "',
       '#> Write-Output BLOCK_COMMENT_OK',
     ].join('\r\n');
-    const prepared = preflightPowerShellHygiene(command, shell);
+    const prepared = await preflightPowerShellHygiene(command, shell);
     assert.deepEqual(prepared, { command, block: null, note: null });
     const result = run(prepared.command);
     assert.equal(result.error, undefined);
@@ -52,7 +52,7 @@ test('packaged PowerShell preflight accepts comments and runs them in Windows Po
     assert.deepEqual(lines, ['COMMENT_ONLY_OK', 'INLINE_COMMENT_OK', 'BLOCK_COMMENT_OK']);
 
     const invalid = '# "\r\nWrite-Output one && Write-Output two';
-    assert.match(preflightPowerShellHygiene(invalid, shell).block, /`&&`/);
+    assert.match((await preflightPowerShellHygiene(invalid, shell)).block, /`&&`/);
     const rejected = run(invalid);
     assert.equal(rejected.error, undefined);
     assert.equal(rejected.status, 1);
@@ -65,9 +65,14 @@ test('packaged PowerShell preflight accepts comments and runs them in Windows Po
       ['Write-Output ([int]1+<# && #>2)', '3'],
       ['Write-Output CONTINUATION_OK `\n# &&', 'CONTINUATION_OK'],
       ['Write-Output /c/My` Documents', 'C:\\My Documents'],
+      ['$h=@{a=<# && #>1}; Write-Output $h.a', '1'],
+      ['Write-Output -InputObject:<# && #>1', '1'],
+      ['1<# && #>+2', '3'],
+      ['$x=1; $x<# && #>+2', '3'],
+      ['return 1+<# && #>2', '3'],
     ];
     for (const [source, expected] of regressions) {
-      const prepared = preflightPowerShellHygiene(source, shell);
+      const prepared = await preflightPowerShellHygiene(source, shell);
       assert.equal(prepared.block, null, source);
       assert.ok(!prepared.command.includes('\0'), source);
       const executed = run(`$ErrorActionPreference = 'Stop'\n${prepared.command}`);
@@ -91,6 +96,10 @@ test('packaged PowerShell preflight accepts comments and runs them in Windows Po
       ['$x=Write-Output foo=<# && #>', false],
       ['Write-Output foo`\n# &&', false],
       ['$x=# &&\n1', true],
+      ['& $cmd +<# && #>', false],
+      ['& "Write-Output" +<# && #>', false],
+      ['`e`cho +<# && #>', false],
+      ['$h=@{a=<# /c/comment #>1}', true],
     ];
     const encodedCases = Buffer.from(JSON.stringify(parserCases.map(([source]) => source)), 'utf8').toString('base64');
     const parsed = run([
@@ -108,7 +117,9 @@ test('packaged PowerShell preflight accepts comments and runs them in Windows Po
       parserCases.map(([, valid]) => valid ? 'True' : 'False')
     );
     for (const [source, valid] of parserCases) {
-      assert.equal(preflightPowerShellHygiene(source, shell).block === null, valid, source);
+      const checked = await preflightPowerShellHygiene(source, shell);
+      assert.equal(checked.block === null, valid, source);
+      if (source.includes('/c/comment')) assert.equal(checked.command, source);
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
