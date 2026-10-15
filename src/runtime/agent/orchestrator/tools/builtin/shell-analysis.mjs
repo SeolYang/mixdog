@@ -510,19 +510,35 @@ function buildLargeShellFileProbeMessage(fullPath, sizeBytes, cmd, cwd) {
 // POSIX shells are a strict no-op.
 const MSYS_ABS_PATH_RE = /(^|[\s"'=,(])\/([A-Za-z])\/([^\s"'`|&;<>()]*)/g;
 
-// Replace every character that lives inside a single/double-quoted string with a
-// filler ('\0'), keeping the string length 1:1 so match offsets stay aligned.
+// Replace strings and comments with filler ('\0'), keeping the string length
+// 1:1 so match offsets stay aligned. Preserve newlines so line boundaries remain.
 // Quote delimiters are preserved (they never match /x/, &&, or $PID=), and a
 // backtick inside double quotes escapes the next char (PS escape). Callers run
 // the drive-rewrite and bash-ism regexes against the mask so quoted literals /
-// regex patterns are never treated as real path tokens or connectors.
+// regex patterns and comments are never treated as real path tokens or connectors.
 function maskQuotedRegions(command) {
   const FILL = '\0';
   let out = '';
   let quote = null;
+  let comment = null;
+  let tokenStart = true;
   let escaped = false;
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
+    if (comment) {
+      if (comment === 'line' && /[\r\n]/.test(ch)) {
+        comment = null;
+        tokenStart = true;
+        out += ch;
+      } else if (comment === 'block' && ch === '#' && command[i + 1] === '>') {
+        out += FILL + FILL;
+        i++;
+        comment = null;
+      } else {
+        out += /[\r\n]/.test(ch) ? ch : FILL;
+      }
+      continue;
+    }
     if (escaped) {
       out += FILL;
       escaped = false;
@@ -537,9 +553,35 @@ function maskQuotedRegions(command) {
       if (ch === quote) {
         out += ch;
         quote = null;
+        tokenStart = true;
         continue;
       }
       out += FILL;
+      continue;
+    }
+    if (ch === '`') {
+      out += FILL;
+      escaped = true;
+      tokenStart = false;
+      continue;
+    }
+    if (tokenStart && ch === '<' && command[i + 1] === '#') {
+      comment = 'block';
+      out += FILL + FILL;
+      i++;
+      continue;
+    }
+    if (tokenStart && ch === '#') {
+      comment = 'line';
+      out += FILL;
+      continue;
+    }
+    if (ch === '@' && /^['"][ \t]*\r?\n/.test(command.slice(i + 1))) {
+      const end = command.indexOf(`\n${command[i + 1]}@`, i + 2);
+      const stop = end < 0 ? command.length : end + 3;
+      out += command.slice(i, stop).replace(/[^\r\n]/g, FILL);
+      i = stop - 1;
+      tokenStart = true;
       continue;
     }
     if (ch === "'" || ch === '"') {
@@ -548,6 +590,7 @@ function maskQuotedRegions(command) {
       continue;
     }
     out += ch;
+    tokenStart = /[\s()[\]{};,|&]/.test(ch);
   }
   return out;
 }
@@ -559,7 +602,7 @@ function rewriteMsysDrivePaths(command) {
   let changed = false;
   let out = '';
   let last = 0;
-  // Matches occur only in unquoted regions (quoted chars are '\0' in `mask`),
+  // Matches occur only in live code (strings/comments are '\0' in `mask`),
   // so the captured groups hold the real, unmasked path text.
   for (const m of mask.matchAll(re)) {
     const [full, pre, drive, rest] = m;
@@ -587,9 +630,9 @@ export function preflightPowerShellHygiene(command, { shellType, shellName } = {
   const name = String(shellName || '').toLowerCase();
   const isLegacyPS = /powershell/.test(name) && !/pwsh/.test(name);
   const violations = [];
-  // `$PID=` reassignment and `&&` connectors are judged on a quote-masked
+  // `$PID=` reassignment and `&&` connectors are judged on a code-only
   // copy so quoted literals (`echo "a && b"`, `Write-Output '$PID=1'`) and
-  // regex/search args are never mistaken for real syntax.
+  // regex/search args and comments are never mistaken for real syntax.
   const masked = maskQuotedRegions(rewritten);
 
   if (/\$PID\s*=(?!=)/i.test(masked)) {
