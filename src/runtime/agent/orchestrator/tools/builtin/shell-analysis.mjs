@@ -508,7 +508,7 @@ function buildLargeShellFileProbeMessage(fullPath, sizeBytes, cmd, cwd) {
 //       reassignment, and `&&` on Windows PowerShell 5.1 are rejected with a
 //       PowerShell-native correction hint so the agent retries valid syntax.
 // POSIX shells are a strict no-op.
-const MSYS_ABS_PATH_RE = /(^|[\s"'=,(])\/([A-Za-z])\/([^\s"'`|&;<>()]*)/g;
+const MSYS_ABS_PATH_RE = /(^|[\s"'=,(])\/([A-Za-z])\/([^\0\s"'`|&;<>()]*)/g;
 
 // Replace strings and comments with filler ('\0'), keeping the string length
 // 1:1 so match offsets stay aligned. Preserve newlines so line boundaries remain.
@@ -522,6 +522,8 @@ function maskQuotedRegions(command) {
   let quote = null;
   let comment = null;
   let tokenStart = true;
+  let argumentMode = false;
+  const modes = [];
   let escaped = false;
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
@@ -529,6 +531,7 @@ function maskQuotedRegions(command) {
       if (comment === 'line' && /[\r\n]/.test(ch)) {
         comment = null;
         tokenStart = true;
+        argumentMode = false;
         out += ch;
       } else if (comment === 'block' && ch === '#' && command[i + 1] === '>') {
         out += FILL + FILL;
@@ -560,6 +563,14 @@ function maskQuotedRegions(command) {
       continue;
     }
     if (ch === '`') {
+      // A continued line retains its token boundary: ` followed by a newline
+      // after whitespace is different from the same escape inside an argument.
+      if (/[\r\n]/.test(command[i + 1] || '')) {
+        const width = command[i + 1] === '\r' && command[i + 2] === '\n' ? 2 : 1;
+        out += FILL + command.slice(i + 1, i + 1 + width);
+        i += width;
+        continue;
+      }
       out += FILL;
       escaped = true;
       tokenStart = false;
@@ -589,8 +600,28 @@ function maskQuotedRegions(command) {
       out += ch;
       continue;
     }
+    // Operators delimit tokens in expressions, but remain literal inside
+    // command arguments (e.g. `$x=1+<#…#>2` vs `echo foo+<#`).
+    if ('([{'.includes(ch)) {
+      modes.push(argumentMode);
+      argumentMode = false;
+    } else if (')]}'.includes(ch)) {
+      argumentMode = modes.pop() ?? false;
+    } else if (/[;|&\r\n]/.test(ch)) {
+      argumentMode = false;
+    } else if (!argumentMode && ch === '-') {
+      const operator = /^-[a-z]+/i.exec(command.slice(i));
+      if (operator) {
+        out += operator[0];
+        i += operator[0].length - 1;
+        tokenStart = true;
+        continue;
+      }
+    } else if (!argumentMode && tokenStart && /[\p{L}_\\.~]/u.test(ch)) {
+      argumentMode = true;
+    }
     out += ch;
-    tokenStart = /[\s()[\]{};,|&]/.test(ch);
+    tokenStart = /[\s()[\]{};,|&]/.test(ch) || (!argumentMode && /[=+*/%!-]/.test(ch));
   }
   return out;
 }
@@ -602,8 +633,8 @@ function rewriteMsysDrivePaths(command) {
   let changed = false;
   let out = '';
   let last = 0;
-  // Matches occur only in live code (strings/comments are '\0' in `mask`),
-  // so the captured groups hold the real, unmasked path text.
+  // Matches occur only in live code. The path pattern excludes '\0', so
+  // strings, comments and escaped characters cannot leak filler into a rewrite.
   for (const m of mask.matchAll(re)) {
     const [full, pre, drive, rest] = m;
     out += src.slice(last, m.index);

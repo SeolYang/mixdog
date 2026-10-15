@@ -56,3 +56,62 @@ test('a live MSYS path is rewritten without changing neighboring comments', () =
   assert.equal(result.block, null);
   assert.match(result.note, /MSYS/);
 });
+
+test('expression operators introduce comments without changing argument tokens', () => {
+  for (const operator of ['=', '+=', '+', '-', '*', '/', '%', '-eq']) {
+    const expression = ['=', '+='].includes(operator) ? `$x${operator}` : `$x=1${operator}`;
+    const command = `${expression}<# && $PID=1 #>2`;
+    assert.deepEqual(preflightPowerShellHygiene(command, PS), { command, block: null, note: null });
+    assert.match(preflightPowerShellHygiene(`${command}; Write-Output A && Write-Output B`, PS).block, /`&&`/);
+    assert.match(preflightPowerShellHygiene(`${command}; $PID=1`, PS).block, /`\$PID`/);
+    assert.match(preflightPowerShellHygiene(`Write-Output foo${operator}<# && #>`, PS).block, /`&&`/);
+  }
+  for (const command of [
+    '$x=# &&\n1',
+    'Write-Output (1+<# && #>2)',
+    '$x=Write-Output (1+<# && #>2)',
+    'Write-Output ([int]1+<# && #>2)',
+  ]) {
+    assert.deepEqual(preflightPowerShellHygiene(command, PS), { command, block: null, note: null });
+  }
+  for (const command of [
+    'Write-Output (1+2) foo+<# && #>',
+    '$x=Write-Output foo=<# && #>',
+    'Write-Output $x+<# && #>',
+  ]) {
+    assert.match(preflightPowerShellHygiene(command, PS).block, /`&&`/);
+  }
+});
+
+test('line continuations preserve comment and argument boundaries', () => {
+  for (const newline of ['\n', '\r\n', '\r']) {
+    for (const command of [
+      `Write-Output \`${newline}# &&${newline}Write-Output OK`,
+      `Write-Output \`${newline}<# && #> OK`,
+    ]) {
+      assert.deepEqual(preflightPowerShellHygiene(command, PS), { command, block: null, note: null });
+    }
+    assert.match(preflightPowerShellHygiene(`Write-Output foo\`${newline}# &&`, PS).block, /`&&`/);
+    assert.match(preflightPowerShellHygiene(`Write-Output \`${newline}# &&${newline}$PID=1`, PS).block, /`\$PID`/);
+  }
+});
+
+test('MSYS rewrites preserve escapes instead of inserting masked characters', () => {
+  for (const shell of [PS, { shellType: 'powershell', shellName: 'pwsh.exe' }]) {
+    for (const suffix of ['My` Documents', 'My`#Documents', 'My`;Documents', 'My`&Documents']) {
+      const result = preflightPowerShellHygiene(`Write-Output /c/${suffix}`, shell);
+      assert.equal(result.command, `Write-Output C:\\${suffix}`);
+      assert.equal(result.block, null);
+      assert.match(result.note, /MSYS/);
+      assert.ok(!result.command.includes('\0'));
+    }
+  }
+  const command = 'Write-Output /c/My` Documents';
+  assert.deepEqual(
+    preflightPowerShellHygiene(command, { shellType: 'posix', shellName: 'bash' }),
+    { command, block: null, note: null }
+  );
+  assert.equal(preflightPowerShellHygiene('Write-Output A && Write-Output B', {
+    shellType: 'powershell', shellName: 'pwsh.exe',
+  }).block, null);
+});
